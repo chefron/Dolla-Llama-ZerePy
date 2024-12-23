@@ -129,6 +129,17 @@ class ZerePyCLI:
                 aliases=['default']
             )
         )
+
+        # Chat command - enables direct conversation with the loaded agent through the CLI
+        self._register_command(
+            Command(
+                name="chat",
+                description="Start a chat session with the current agent",
+                tips=["Use 'exit' to end the chat session"],
+                handler=self.chat_session,
+                aliases=['talk']
+            )
+        )
         
         ################## CONNECTIONS ################## 
         # List actions command
@@ -473,6 +484,30 @@ class ZerePyCLI:
             self.agent.connection_manager.list_connections()
         else:
             logging.info("Please load an agent to see the list of supported actions")
+
+    def chat_session(self, input_list: List[str]) -> None:
+        if self.agent is None:
+            logger.info("No agent loaded. Use 'load-agent' first.")
+            return
+
+        if not self.agent.is_llm_set:
+            self.agent._setup_llm_provider()
+
+        logger.info(f"\nStarting chat with {self.agent.name}")
+        print_h_bar()
+
+        while True:
+            try:
+                user_input = self.session.prompt("\nYou: ").strip()
+                if user_input.lower() == 'exit':
+                    break
+                
+                response = self.agent.prompt_llm(user_input)
+                logger.info(f"\n{self.agent.name}: {response}")
+                print_h_bar()
+                
+            except KeyboardInterrupt:
+                break
 
     def exit(self, input_list: List[str]) -> None:
         """Exit the CLI gracefully"""
