@@ -21,7 +21,6 @@ from src.helpers import print_h_bar
 # Configure logging
 logger = logging.getLogger("connections.youtube_connection")
 logging.getLogger('googleapiclient.discovery_cache').setLevel(logging.ERROR)
-logging.getLogger("HTTPConnection").setLevel(logging.WARNING)
 
 class YouTubeConnectionError(Exception):
     """Base exception for YouTube connection errors"""
