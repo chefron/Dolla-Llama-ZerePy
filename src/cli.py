@@ -2,6 +2,7 @@ import sys
 import json
 import logging
 import os
+from datetime import datetime
 from dataclasses import dataclass
 from typing import Callable, Dict, List
 from pathlib import Path
@@ -150,6 +151,50 @@ class ZerePyCLI:
                 tips=["Use 'exit' to end the chat session"],
                 handler=self.chat_session,
                 aliases=['talk']
+            )
+        )
+
+        # Memory commands
+        self._register_command(
+            Command(
+                name="upload-document",
+                description="Upload a document to the agent's memory",
+                tips=["Format: upload-document {filepath} {category}",
+                    "Example: upload-document theory.pdf music_theory"],
+                handler=self.upload_document,
+                aliases=['upload', 'learn']
+            )
+        )
+        
+        self._register_command(
+            Command(
+                name="search-memory",
+                description="Search the agent's memory",
+                tips=["Format: search-memory {category} {query}",
+                    "Example: search-memory music_theory 'chord progressions'"],
+                handler=self.search_memory,
+                aliases=['recall', 'remember']
+            )
+        )
+
+        self._register_command(
+            Command(
+                name="list-memory-categories",
+                description="List all memory categories and their sizes",
+                tips=["Shows all categories and how many memories each contains"],
+                handler=self.list_memory_categories,
+                aliases=['categories', 'ls-mem']
+            )
+        )
+
+        self._register_command(
+            Command(
+                name="delete-memory-category",
+                description="Delete all memories in a category",
+                tips=["Format: delete-memory-category {category}",
+                    "WARNING: This will permanently delete all memories in the category"],
+                handler=self.delete_memory_category,
+                aliases=['del-mem-cat', 'remove-memory-category']
             )
         )
         
@@ -525,13 +570,181 @@ class ZerePyCLI:
                 user_input = self.session.prompt("\nYou: ").strip()
                 if user_input.lower() == 'exit':
                     break
+
+                # Search relevant memories before responding
+                relevant_memories = self.agent.memory.search(
+                    category="reference_materials",
+                    query=user_input,
+                    n_results=3
+                )
+
+                # Construct context from memories
+                memory_context = ""
+                if relevant_memories:
+                    memory_context = "\nRelevant information from my memory:\n"
+                    for result in relevant_memories:
+                        memory_context += f"- {result.memory.content}\n"
+
+                # Add memory context to prompt
+                enriched_prompt = f"{user_input}\n{memory_context}"
                 
-                response = self.agent.prompt_llm(user_input)
+                response = self.agent.prompt_llm(enriched_prompt)
+
+                # Store the interaction in memory
+                self.agent.memory.create(
+                    category="conversations",
+                    content=f"User: {user_input}\nAgent: {response}",
+                    metadata={
+                        "type": "chat",
+                        "role": "human",
+                        "timestamp": datetime.now().isoformat()
+                    }
+                )
+                
                 logger.info(f"\n{self.agent.name}: {response}")
                 print_h_bar()
                 
             except KeyboardInterrupt:
                 break
+
+    def upload_document(self, input_list: List[str]) -> None:
+        """Handle document upload to memory"""
+        if self.agent is None:
+            logger.info("No agent loaded. Use 'load-agent' first.")
+            return
+            
+        if len(input_list) < 3:
+            logger.info("Please specify both a file path and category.")
+            logger.info("Format: upload-document {filepath} {category}")
+            return
+            
+        filepath = input_list[1]
+        category = input_list[2]
+        
+        try:
+            # Get file extension
+            file_ext = Path(filepath).suffix.lower()
+            
+            if file_ext == '.pdf':
+                memory_ids = self.agent.memory.ingest_pdf(
+                    filepath,
+                    category=category,
+                    metadata={
+                        "source": filepath,
+                        "type": "document",
+                        "format": "pdf"
+                    }
+                )
+                logger.info(f"✅ Successfully stored PDF in {len(memory_ids)} chunks")
+                
+            elif file_ext in ['.txt', '.md']:
+                with open(filepath, 'r', encoding='utf-8') as file:
+                    content = file.read()
+                    memory_id = self.agent.memory.create(
+                        category=category,
+                        content=content,
+                        metadata={
+                            "source": filepath,
+                            "type": "document",
+                            "format": file_ext[1:]  # remove the dot
+                        }
+                    )
+                    logger.info(f"✅ Successfully stored text document")
+            else:
+                logger.error(f"Unsupported file format: {file_ext}")
+                
+        except FileNotFoundError:
+            logger.error(f"File not found: {filepath}")
+        except Exception as e:
+            logger.error(f"Error uploading document: {e}")
+
+    def search_memory(self, input_list: List[str]) -> None:
+        """Search agent's memory"""
+        if self.agent is None:
+            logger.info("No agent loaded. Use 'load-agent' first.")
+            return
+            
+        if len(input_list) < 3:
+            logger.info("Please specify both a category and search query.")
+            logger.info("Format: search-memory {category} {query}")
+            return
+            
+        category = input_list[1]
+        # Combine remaining words as the query
+        query = " ".join(input_list[2:])
+        
+        try:
+            results = self.agent.memory.search(
+                category=category,
+                query=query,
+                n_results=5
+            )
+            
+            if not results:
+                logger.info(f"No memories found in category '{category}' matching '{query}'")
+                return
+                
+            logger.info(f"\nFound {len(results)} relevant memories:")
+            print_h_bar()
+            
+            for i, result in enumerate(results, 1):
+                memory = result.memory
+                similarity = result.similarity_score
+                
+                logger.info(f"\n{i}. Similarity: {similarity:.2f}")
+                logger.info(f"Category: {memory.category}")
+                logger.info(f"Content: {memory.content[:200]}...")  # Show first 200 chars
+                logger.info(f"Metadata: {memory.metadata}")
+                print_h_bar()
+                
+        except Exception as e:
+            logger.error(f"Error searching memories: {e}")
+
+    def list_memory_categories(self, input_list: List[str]) -> None:
+        """List all memory categories"""
+        if self.agent is None:
+            logger.info("No agent loaded. Use 'load-agent' first.")
+            return
+        
+        try:
+            categories = self.agent.memory.list_categories()
+            
+            if not categories:
+                logger.info("No memory categories found.")
+                return
+                
+            logger.info("\nMemory Categories:")
+            for category in categories:
+                count = self.agent.memory.count(category)
+                logger.info(f"- {category} ({count} memories)")
+                
+        except Exception as e:
+            logger.error(f"Error listing categories: {e}")
+
+    def delete_memory_category(self, input_list: List[str]) -> None:
+        """Delete all memories in a category"""
+        if self.agent is None:
+            logger.info("No agent loaded. Use 'load-agent' first.")
+            return
+            
+        if len(input_list) < 2:
+            logger.info("Please specify a category to delete.")
+            logger.info("Format: delete-memory-category {category}")
+            return
+            
+        category = input_list[1]
+
+        # Check if category exists first
+        if category not in self.agent.memory.list_categories():
+            logger.error(f"Category '{category}' does not exist.")
+            logger.info("Use 'list-memory-categories' to see available categories.")
+            return
+        
+        try:
+            self.agent.memory.delete_category(category)
+            logger.info(f"✅ Successfully deleted category: {category}")
+        except Exception as e:
+            logger.error(f"Error deleting memory category: {e}")
 
     def exit(self, input_list: List[str]) -> None:
         """Exit the CLI gracefully"""

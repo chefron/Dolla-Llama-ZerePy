@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 from src.connection_manager import ConnectionManager
+from src.memory.manager import MemoryManager
 from src.helpers import print_h_bar
 from src.action_handler import execute_action
 import src.actions.twitter_actions  
@@ -29,6 +30,20 @@ class ZerePyAgent:
             missing_fields = [field for field in REQUIRED_FIELDS if field not in agent_dict]
             if missing_fields:
                 raise KeyError(f"Missing required fields: {', '.join(missing_fields)}")
+            
+            # Initialize memory manager
+            self.memory = MemoryManager()
+
+            # Initialize default memory collections
+            default_collections = [
+                "reference_materials",
+                "conversations",
+                "action_history",
+                "state_snapshots"
+            ]
+            
+            for collection in default_collections:
+                self.memory.get_or_create_collection(collection)
 
             self.name = agent_dict["name"]
             self.bio = agent_dict["bio"]
