@@ -24,7 +24,7 @@ aiohttp = "^3.11.11"
 requests = "2.32.3"
 jupiter-python-sdk = "^0.0.2.0"
 chromadb = "^0.6.3"
-pypdf2 = "^3.0.1"
+pypdf = "^5.1.0"
 
 
 [build-system]

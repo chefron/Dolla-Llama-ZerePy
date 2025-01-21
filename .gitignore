@@ -10,6 +10,10 @@ twitter_config.json
 
 # AGENTS
 agents/*.json
+agents/dolla-llama
+
+# MEMORY DATABASE
+memory_db
 
 # Include example agent and general config
 !agents/example.json
@@ -17,4 +21,3 @@ agents/*.json
 
 # macOS
 .DS_Store
-.codegpt

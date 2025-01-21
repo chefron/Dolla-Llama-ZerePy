@@ -1,10 +1,12 @@
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 from datetime import datetime
 from .store import VectorStore
 from .types import Memory, SearchResult, EpochInfo
-import PyPDF2
+from pypdf import PdfReader
+from pathlib import Path
 from io import BytesIO
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -29,24 +31,58 @@ class MemoryManager:
         
         return self.store.add(category, content, metadata)
 
-    def search(self, 
-               category: str,
-               query: str,
-               n_results: int = 5,
-               filter_metadata: Optional[Dict] = None) -> List[SearchResult]:
-        """Search for similar memories"""
-        return self.store.search(category, query, n_results, filter_metadata)
+    def search(
+        self, 
+        category: Union[str, List[str]],  # Keep this to allow both single category and list
+        query: str,
+        n_results: int = 3,
+        min_similarity: float = 0.1,
+        filter_metadata: Optional[Dict] = None
+    ) -> List[SearchResult]:
+        """Search for similar memories across one or multiple categories"""
+        results = []
+        
+        # Convert single category to list for uniform handling
+        categories = [category] if isinstance(category, str) else category
+        
+        # Search each category
+        for cat in categories:
+            if cat in self.store.collections:
+                cat_results = self.store.search(
+                    cat,
+                    query,
+                    n_results=n_results,
+                    filter_metadata=filter_metadata
+                )
+                results.extend(cat_results)
+        
+        # Sort all results by similarity score
+        results.sort(key=lambda x: x.similarity_score, reverse=True)
+        
+        # Filter and limit results
+        filtered_results = [
+            result for result in results 
+            if result.similarity_score > min_similarity
+        ]
+        
+        return filtered_results[:n_results]
 
     def get_by_id(self, category: str, memory_id: str) -> Optional[Memory]:
         """Retrieve a specific memory by ID"""
         return self.store.get(category, memory_id)
 
-    def get_recent(self, 
-                   category: str,
-                   n_results: int = 10,
-                   filter_metadata: Optional[Dict] = None) -> List[Memory]:
-        """Get most recent memories"""
-        return self.store.get_recent(category, n_results, filter_metadata)
+    def get_recent(
+        self,
+        category: str,
+        n_results: int = 10,
+        filter_metadata: Optional[Dict] = None
+    ) -> List[Memory]:
+        """Get most recent memories from a category"""
+        try:
+            return self.store.get_recent(category, n_results, filter_metadata)
+        except Exception as e:
+            logger.error(f"Error getting recent memories from {category}: {e}")
+            return []
 
     def increment_epoch(self, metadata: Optional[Dict] = None) -> EpochInfo:
         """Start a new epoch"""
@@ -61,9 +97,10 @@ class MemoryManager:
         """Get current epoch information"""
         return self.current_epoch
     
+
     def list_categories(self) -> List[str]:
         """List all memory categories"""
-        return list(self.store.collections.keys())
+        return self.store.list_categories()
 
     def count(self, category: str) -> int:
         """Count memories in a category"""
@@ -107,101 +144,136 @@ class MemoryManager:
         except Exception:
             return False
 
-    def ingest_pdf(self, 
-                file_path: str,
-                category: str = "reference_materials",
-                chunk_size: int = 500,  # Reduced from 1000
-                metadata: Optional[Dict] = None) -> List[str]:
+    def split_document(self, text: str, 
+                        chunk_size: int = 500, 
+                        chunk_overlap: int = 100,
+                        respect_boundaries: bool = True) -> List[Dict[str, str]]:
         """
-        Ingest a PDF document into memory by breaking it into chunks
+        Split a document into overlapping chunks while attempting to respect content boundaries.
+        
+        Args:
+            text: Source text to split
+            chunk_size: Target size for each chunk in characters
+            chunk_overlap: Number of characters to overlap between chunks
+            respect_boundaries: Try to break at sentence/paragraph boundaries when possible
+        """
+        sections = []
+        
+        # First, split into coarse sections based on headers
+        coarse_sections = []
+        current_section = []
+        current_header = None
+        
+        for line in text.splitlines():
+            stripped = line.strip()
+            
+            # Detect headers
+            if stripped.startswith('# ') or (stripped.isupper() and len(stripped) > 4):
+                if current_section:
+                    coarse_sections.append({
+                        'header': current_header,
+                        'content': '\n'.join(current_section)
+                    })
+                current_header = stripped.lstrip('#').strip()
+                current_section = []
+            current_section.append(line)
+        
+        # Add final section
+        if current_section:
+            coarse_sections.append({
+                'header': current_header,
+                'content': '\n'.join(current_section)
+            })
+        
+        # Now split each coarse section into smaller chunks
+        for section in coarse_sections:
+            content = section['content']
+            header = section['header']
+            
+            # If content is short enough, keep it as one chunk
+            if len(content) <= chunk_size:
+                sections.append({
+                    'header': header,
+                    'content': content.strip()
+                })
+                continue
+            
+            # Split into overlapping chunks
+            start = 0
+            while start < len(content):
+                # Find end of chunk
+                end = start + chunk_size
+                
+                if respect_boundaries and end < len(content):
+                    # Try to find sentence boundary
+                    sentence_end = content.find('. ', end - 50, end + 50)
+                    if sentence_end != -1:
+                        end = sentence_end + 1
+                    else:
+                        # Try paragraph boundary
+                        para_end = content.find('\n\n', end - 50, end + 50)
+                        if para_end != -1:
+                            end = para_end
+                
+                chunk_content = content[start:end].strip()
+                if chunk_content:  # Only add non-empty chunks
+                    sections.append({
+                        'header': header,
+                        'content': chunk_content
+                    })
+                
+                # Move start for next chunk, considering overlap
+                start = end - chunk_overlap
+                if start < 0:
+                    start = 0
+        
+        return sections
+
+    def create_chunks(self,
+                    file_path: str,
+                    category: str,
+                    metadata: Optional[Dict] = None) -> List[str]:
+        """
+        Create memory chunks from any document type while preserving structure
         """
         memory_ids = []
         base_metadata = {
             "source": file_path,
-            "document_type": "pdf",
+            "document_type": Path(file_path).suffix[1:],  # Remove dot from extension
             **(metadata or {})
         }
-
+        
         try:
-            with open(file_path, 'rb') as file:
-                reader = PyPDF2.PdfReader(file)
-                
-                # Process each page separately
-                for page_num, page in enumerate(reader.pages):
-                    text = page.extract_text()
-                    
-                    # Break page into chunks
-                    chunks = self._smart_chunk_text(text, chunk_size)
-                    
-                    # Store each chunk with page information
-                    for i, chunk in enumerate(chunks):
-                        chunk_metadata = {
-                            **base_metadata,
-                            "page_number": page_num + 1,
-                            "chunk_index": i,
-                            "chunks_in_page": len(chunks)
-                        }
-                        memory = self.create(category, chunk, chunk_metadata)
-                        memory_ids.append(memory.id)
-
-                return memory_ids
-        except Exception as e:
-            raise Exception(f"Failed to process PDF: {str(e)}")
-
-    def _smart_chunk_text(self, text: str, chunk_size: int) -> List[str]:
-        """Break text into chunks while trying to maintain logical boundaries"""
-        chunks = []
-        
-        # Split by paragraphs
-        paragraphs = [p for p in text.split('\n\n') if p.strip()]
-        
-        current_chunk = []
-        current_size = 0
-        
-        for paragraph in paragraphs:
-            paragraph_size = len(paragraph)
+            # Read the file
+            with open(file_path, 'r', encoding='utf-8') as file:
+                text = file.read()
             
-            # If this paragraph alone exceeds chunk size, split it by sentences
-            if paragraph_size > chunk_size:
-                sentences = [s.strip() for s in paragraph.split('.') if s.strip()]
-                for sentence in sentences:
-                    if len(sentence) > chunk_size:
-                        # If a sentence is too long, split by words
-                        words = sentence.split()
-                        temp_chunk = []
-                        temp_size = 0
-                        for word in words:
-                            if temp_size + len(word) > chunk_size:
-                                chunks.append(' '.join(temp_chunk))
-                                temp_chunk = [word]
-                                temp_size = len(word)
-                            else:
-                                temp_chunk.append(word)
-                                temp_size += len(word) + 1
-                        if temp_chunk:
-                            chunks.append(' '.join(temp_chunk))
-                    else:
-                        current_size += len(sentence)
-                        if current_size > chunk_size:
-                            chunks.append('. '.join(current_chunk) + '.')
-                            current_chunk = [sentence]
-                            current_size = len(sentence)
-                        else:
-                            current_chunk.append(sentence)
-            else:
-                if current_size + paragraph_size > chunk_size:
-                    chunks.append('. '.join(current_chunk) + '.')
-                    current_chunk = [paragraph]
-                    current_size = paragraph_size
-                else:
-                    current_chunk.append(paragraph)
-                    current_size += paragraph_size
-        
-        # Add the last chunk if there is one
-        if current_chunk:
-            chunks.append('. '.join(current_chunk) + '.')
-        
-        return chunks
+            # Split into logical sections
+            sections = self.split_document(text)
+            
+            # Create memories for each section
+            for i, section in enumerate(sections):
+                section_metadata = {
+                    **base_metadata,
+                    "chunk_index": i,
+                    "chunks_total": len(sections),
+                    "section_header": section['header'],
+                    "chunk_size": len(section['content']),
+                    "has_code": bool(re.search(r'```.*```', section['content'], re.DOTALL))
+                }
+                
+                memory = self.create(
+                    category=category,
+                    content=section['content'],
+                    metadata=section_metadata
+                )
+                memory_ids.append(memory.id)
+            
+            return memory_ids
+            
+        except Exception as e:
+            logger.error(f"Failed to process document {file_path}: {str(e)}")
+            raise
     
     def delete_category(self, category: str) -> bool:
         """Delete an entire category of memories"""

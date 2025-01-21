@@ -197,6 +197,17 @@ class ZerePyCLI:
                 aliases=['del-mem-cat', 'remove-memory-category']
             )
         )
+
+        self._register_command(
+            Command(
+                name="diagnose-memory",
+                description="Diagnose issues with a memory category",
+                tips=["Format: diagnose-memory {category}",
+                    "Shows detailed information about the memory collection's state"],
+                handler=self.diagnose_memory,
+                aliases=['debug-mem', 'mem-debug']
+            )
+        )
         
         ################## CONNECTIONS ################## 
         # List actions command
@@ -570,40 +581,38 @@ class ZerePyCLI:
                 user_input = self.session.prompt("\nYou: ").strip()
                 if user_input.lower() == 'exit':
                     break
-
-                # Search relevant memories before responding
-                relevant_memories = self.agent.memory.search(
-                    category="reference_materials",
-                    query=user_input,
-                    n_results=3
-                )
-
-                # Construct context from memories
+                
                 memory_context = ""
-                if relevant_memories:
-                    memory_context = "\nRelevant information from my memory:\n"
-                    for result in relevant_memories:
-                        memory_context += f"- {result.memory.content}\n"
+                if len(user_input.split()) > 3:  # Basic check for query complexity
+                    logger.info("\n🔍 Searching memories...")
 
-                # Add memory context to prompt
-                enriched_prompt = f"{user_input}\n{memory_context}"
+                    available_categories = self.agent.memory.list_categories()
+                    
+                    relevant_memories = self.agent.memory.search(
+                        category=available_categories,
+                        query=user_input,
+                        n_results=3,
+                        min_similarity=0.2
+                    )
+                    
+                    if relevant_memories:
+                        logger.info("Found relevant memories:")
+                        for i, result in enumerate(relevant_memories, 1):
+                            logger.info(f"Memory {i} (similarity: {result.similarity_score:.2f}):")
+                            logger.info(f"  {result.memory.content[:100]}...")
+                            memory_context += f"From {result.memory.metadata.get('source', 'reference')}:\n{result.memory.content}\n\n"
+
+                # Construct final prompt
+                enriched_prompt = (
+                    f"{user_input}\n\n"
+                    f"{'Knowledge to draw from:\n' + memory_context if memory_context else ''}"
+                    f"Use your personality and style to respond, incorporating any relevant knowledge naturally."
+                )
                 
                 response = self.agent.prompt_llm(enriched_prompt)
-
-                # Store the interaction in memory
-                self.agent.memory.create(
-                    category="conversations",
-                    content=f"User: {user_input}\nAgent: {response}",
-                    metadata={
-                        "type": "chat",
-                        "role": "human",
-                        "timestamp": datetime.now().isoformat()
-                    }
-                )
-                
                 logger.info(f"\n{self.agent.name}: {response}")
                 print_h_bar()
-                
+                    
             except KeyboardInterrupt:
                 break
 
@@ -612,47 +621,25 @@ class ZerePyCLI:
         if self.agent is None:
             logger.info("No agent loaded. Use 'load-agent' first.")
             return
-            
+                
         if len(input_list) < 3:
             logger.info("Please specify both a file path and category.")
             logger.info("Format: upload-document {filepath} {category}")
             return
-            
+                
         filepath = input_list[1]
         category = input_list[2]
         
         try:
-            # Get file extension
-            file_ext = Path(filepath).suffix.lower()
-            
-            if file_ext == '.pdf':
-                memory_ids = self.agent.memory.ingest_pdf(
-                    filepath,
-                    category=category,
-                    metadata={
-                        "source": filepath,
-                        "type": "document",
-                        "format": "pdf"
-                    }
-                )
-                logger.info(f"✅ Successfully stored PDF in {len(memory_ids)} chunks")
-                
-            elif file_ext in ['.txt', '.md']:
-                with open(filepath, 'r', encoding='utf-8') as file:
-                    content = file.read()
-                    memory_id = self.agent.memory.create(
-                        category=category,
-                        content=content,
-                        metadata={
-                            "source": filepath,
-                            "type": "document",
-                            "format": file_ext[1:]  # remove the dot
-                        }
-                    )
-                    logger.info(f"✅ Successfully stored text document")
-            else:
-                logger.error(f"Unsupported file format: {file_ext}")
-                
+            memory_ids = self.agent.memory.create_chunks(
+                filepath,
+                category=category,
+                metadata={
+                    "type": "document",
+                }
+            )
+            logger.info(f"✅ Successfully stored document in {len(memory_ids)} chunks")
+                    
         except FileNotFoundError:
             logger.error(f"File not found: {filepath}")
         except Exception as e:
@@ -745,6 +732,26 @@ class ZerePyCLI:
             logger.info(f"✅ Successfully deleted category: {category}")
         except Exception as e:
             logger.error(f"Error deleting memory category: {e}")
+
+    def diagnose_memory(self, input_list: List[str]) -> None:
+        """Diagnose memory collection issues"""
+        if self.agent is None:
+            logger.info("No agent loaded. Use 'load-agent' first.")
+            return
+                
+        if len(input_list) < 2:
+            logger.info("Please specify a category to diagnose.")
+            logger.info("Format: diagnose-memory {category}")
+            return
+                
+        category = input_list[1]
+        try:
+            result = self.agent.memory.store.diagnose_collection(category)
+            logger.info("\nCollection Diagnosis:")
+            for key, value in result.items():
+                logger.info(f"{key}: {value}")
+        except Exception as e:
+            logger.error(f"Error diagnosing collection: {e}")
 
     def exit(self, input_list: List[str]) -> None:
         """Exit the CLI gracefully"""

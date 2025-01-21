@@ -37,9 +37,6 @@ class ZerePyAgent:
             # Initialize default memory collections
             default_collections = [
                 "reference_materials",
-                "conversations",
-                "action_history",
-                "state_snapshots"
             ]
             
             for collection in default_collections:
@@ -124,7 +121,6 @@ class ZerePyAgent:
                         )
                         if tweets:
                             prompt_parts.extend(f"- {tweet['text']}" for tweet in tweets)
-
             self._system_prompt = "\n".join(prompt_parts)
 
         return self._system_prompt
