@@ -32,15 +32,7 @@ class ZerePyAgent:
                 raise KeyError(f"Missing required fields: {', '.join(missing_fields)}")
             
             # Initialize memory manager
-            self.memory = MemoryManager()
-
-            # Initialize default memory collections
-            default_collections = [
-                "reference_materials",
-            ]
-            
-            for collection in default_collections:
-                self.memory.get_or_create_collection(collection)
+            self.memory = MemoryManager(agent_name=agent_name)
 
             self.name = agent_dict["name"]
             self.bio = agent_dict["bio"]

@@ -1,22 +1,23 @@
 from chromadb import PersistentClient
 from chromadb.utils import embedding_functions
-from sentence_transformers import SentenceTransformer
 from typing import Dict, List, Optional
 from .types import Memory, SearchResult
 import logging
 import math
+import os
+os.environ["ANONYMIZED_TELEMETRY"] = "False"
 logger = logging.getLogger(__name__)
 
 class VectorStore:
-    def __init__(self):
-        # Create a persistent client
-        self.client = PersistentClient(path="./memory_db")
+    def __init__(self, agent_name: str):
 
-        # Use Sentence Transformer model
-        self.embedding_model = SentenceTransformer('all-mpnet-base-v2')
-
-        # Wrapping the model in a callable embedding function
-        self.embedding_function = lambda texts: self.embedding_model.encode(texts).tolist()
+        # Create agent-specific directory
+        from pathlib import Path
+        self.db_path = Path(f"./memory_db/{agent_name}")
+        self.db_path.parent.mkdir(exist_ok=True)  # Create memory_db if it doesn't exist
+        
+        # Create a persistent client with agent-specific path
+        self.client = PersistentClient(path=str(self.db_path))
 
         self.collections = {}
 

@@ -11,8 +11,8 @@ import re
 logger = logging.getLogger(__name__)
 
 class MemoryManager:
-    def __init__(self):
-        self.store = VectorStore()
+    def __init__(self, agent_name: str):
+        self.store = VectorStore(agent_name)
         self.current_epoch = EpochInfo(
             epoch_number=1,
             start_time=datetime.now()
