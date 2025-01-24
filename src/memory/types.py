@@ -17,10 +17,3 @@ class SearchResult:
     """Represents a search result with its similarity score"""
     memory: Memory
     similarity_score: float
-
-@dataclass
-class EpochInfo:
-    """Represents information about a memory epoch"""
-    epoch_number: int
-    start_time: datetime
-    metadata: Optional[Dict] = None

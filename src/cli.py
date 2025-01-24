@@ -163,7 +163,7 @@ class ZerePyCLI:
                     "All files will be stored in the same category",
                     "You can use wildcards like notes/*.txt to upload all text files in the notes folder"],
                 handler=self.memory_upload,
-                aliases=['mem-upload']
+                aliases=['upload-memory']
             )
         )
 
@@ -175,7 +175,7 @@ class ZerePyCLI:
                     "Without category: shows all categories and their sizes",
                     "With category: shows documents in that category"],
                 handler=self.memory_list,
-                aliases=['mem-list']
+                aliases=['list-memories']
             )
         )
 
@@ -187,7 +187,7 @@ class ZerePyCLI:
                     "Example: memory-search 'blockchain basics'",
                     "Example: memory-search 'smart contracts' solana"],
                 handler=self.memory_search,
-                aliases=['mem-search']
+                aliases=['search-memory']
             )
         )
 
@@ -200,7 +200,7 @@ class ZerePyCLI:
                     "With category: wipes entire category",
                     "With category and filename: wipes specific document"],
                 handler=self.memory_wipe,
-                aliases=['mem-wipe']
+                aliases=['wipe-memory']
             )
         )
         
@@ -578,26 +578,20 @@ class ZerePyCLI:
                     break
                 
                 memory_context = ""
-                if len(user_input.split()) > 3:  # Basic check for query complexity
+                # Only search memories for meaningful queries longer than 3 words
+                if len(user_input.split()) > 3:
                     logger.info("\n🔍 Searching memories...")
+                    memory_context, results = self.agent.memory.get_relevant_context(user_input)
 
-                    available_categories = self.agent.memory.list_categories()
-                    
-                    relevant_memories = self.agent.memory.search(
-                        category=available_categories,
-                        query=user_input,
-                        n_results=3,
-                        min_similarity=0.2
-                    )
-                    
-                    if relevant_memories:
+                    if results:
                         logger.info("Found relevant memories:")
-                        for i, result in enumerate(relevant_memories, 1):
-                            logger.info(f"Memory {i} (similarity: {result.similarity_score:.2f}):")
-                            logger.info(f"  {result.memory.content[:100]}...")
+                        for i, result in enumerate(results, 1):
+                            logger.info(f"\nMemory {i} (similarity: {result.similarity_score:.2f}):")
+                            logger.info(f"Source: {result.memory.metadata.get('source', 'Unknown')}")
+                            logger.info(f"Preview: {result.memory.content[:200]}...")
                             memory_context += f"From {result.memory.metadata.get('source', 'reference')}:\n{result.memory.content}\n\n"
+                        logger.info("\nUsing these memories for context...")
 
-                # Construct final prompt
                 enriched_prompt = (
                     f"{user_input}\n\n"
                     f"{'Knowledge to draw from:\n' + memory_context if memory_context else ''}"
@@ -625,7 +619,7 @@ class ZerePyCLI:
         category = input_list[1]
         filepaths = input_list[2:]
         
-        # Expand any wildcards in filepaths
+        # Expand wildcards
         import glob
         expanded_paths = []
         for filepath in filepaths:
@@ -633,44 +627,19 @@ class ZerePyCLI:
             if expanded:
                 expanded_paths.extend(expanded)
             else:
-                expanded_paths.append(filepath)  # Keep original path if no matches
+                expanded_paths.append(filepath)
         
         if not expanded_paths:
             logger.info("No matching files found.")
             return
         
-        successful = 0
-        failed = 0
-        total_chunks = 0
+        stats = self.agent.memory.upload_documents(expanded_paths, category)
         
-        for filepath in expanded_paths:
-            try:
-                memory_ids = self.agent.memory.create_chunks(
-                    filepath,
-                    category=category,
-                    metadata={
-                        "type": "document",
-                        "original_filename": filepath,
-                        "upload_timestamp": datetime.now().isoformat()
-                    }
-                )
-                successful += 1
-                total_chunks += len(memory_ids)
-                logger.info(f"✅ Successfully processed: {filepath} ({len(memory_ids)} chunks)")
-                        
-            except FileNotFoundError:
-                logger.error(f"❌ File not found: {filepath}")
-                failed += 1
-            except Exception as e:
-                logger.error(f"❌ Error processing {filepath}: {e}")
-                failed += 1
-        
-        # Summary
         logger.info("\nUpload Summary:")
-        logger.info(f"Total files attempted: {len(expanded_paths)}")
-        logger.info(f"Successfully processed: {successful}")
-        logger.info(f"Failed: {failed}")
-        logger.info(f"Total chunks created: {total_chunks}")
+        logger.info(f"Total files attempted: {stats['total_attempted']}")
+        logger.info(f"Successfully processed: {stats['successful']}")
+        logger.info(f"Failed: {stats['failed']}")
+        logger.info(f"Total chunks created: {stats['total_chunks']}")
 
     def memory_list(self, input_list: List[str]) -> None:
         """List memory categories or documents in a category"""
@@ -681,54 +650,32 @@ class ZerePyCLI:
         # If no category specified, list all categories
         if len(input_list) < 2:
             categories = self.agent.memory.list_categories()
-            
             if not categories:
                 logger.info("No memory categories found.")
                 return
                 
             print_h_bar()
-            
             for category in sorted(categories):
-                count = self.agent.memory.count(category)
-                memories = self.agent.memory.get_recent(category, n_results=1000)
-                
-                # Count unique documents by filename
-                unique_docs = len(set(mem.metadata.get('original_filename', 'Unknown') 
-                                for mem in memories))
-                
+                stats = self.agent.memory.get_category_stats(category)
                 logger.info(f"\nCategory: {category}")
-                logger.info(f"Documents: {unique_docs}")
-                logger.info(f"Total chunks: {count}")
-            
+                logger.info(f"Documents: {stats['document_count']}")
+                logger.info(f"Total chunks: {stats['total_chunks']}")
             print_h_bar()
             return
-                
-        # Otherwise, list documents in the specified category
+
+        # Get stats for specified category
         category = input_list[1]
-        
         try:
-            memories = self.agent.memory.get_recent(category, n_results=1000)
-            
-            if not memories:
-                logger.info(f"No documents found in category '{category}'")
-                return
-                
-            # Group memories by original filename
-            from collections import defaultdict
-            docs = defaultdict(list)
-            for memory in memories:
-                filename = memory.metadata.get('original_filename', 'Unknown source')
-                docs[filename].append(memory)
+            stats = self.agent.memory.get_category_stats(category)
             
             logger.info(f"\nDocuments in category '{category}':")
             print_h_bar()
             
-            for filename, chunks in docs.items():
-                total_size = sum(len(chunk.content) for chunk in chunks)
-                logger.info(f"\nFile: {filename}")
-                logger.info(f"Chunks: {len(chunks)}")
-                logger.info(f"Total size: {total_size:,} characters")
-                logger.info(f"Upload date: {chunks[0].metadata.get('upload_timestamp', 'Unknown')[:10]}")
+            for doc in stats["documents"]:
+                logger.info(f"\nFile: {doc['filename']}")
+                logger.info(f"Chunks: {doc['chunk_count']}")
+                logger.info(f"Total size: {doc['total_size']:,} characters")
+                logger.info(f"Upload date: {doc['upload_date']}")
                 
             print_h_bar()
             
@@ -740,48 +687,43 @@ class ZerePyCLI:
         if not self.agent:
             logger.info("No agent loaded. Use 'load-agent' first.")
             return
-                
+                    
         if len(input_list) < 2:
             logger.info("Please specify a search query.")
-            logger.info("Format: memory-search query [category]")
+            logger.info("Format: memory-search 'search terms' [category]")
+            return
+
+        # Check if final argument is a valid category
+        potential_category = input_list[-1]
+        available_categories = self.agent.memory.list_categories()
+        category = potential_category if potential_category in available_categories else None
+        
+        # Get query
+        query_parts = input_list[1:-1] if category else input_list[1:]
+        query = ' '.join(query_parts).strip("'\"")
+        
+        results = self.agent.memory.search(query=query, category=category)
+        
+        if not results:
+            if category:
+                logger.info(f"No results found in category '{category}' for '{query}'")
+            else:
+                logger.info(f"No results found for '{query}'")
             return
         
-        # Get query and optional category
-        query = input_list[1]
-        category = input_list[2] if len(input_list) > 2 else None
-        categories = [category] if category else self.agent.memory.list_categories()
+        logger.info(f"\nSearch results for '{query}':")
+        print_h_bar()
         
-        try:
-            results = self.agent.memory.search(
-                category=categories,
-                query=query,
-                n_results=5,
-                min_similarity=0.1
-            )
+        for i, result in enumerate(results, 1):
+            memory = result.memory
+            similarity = result.similarity_score
             
-            if not results:
-                if category:
-                    logger.info(f"No results found in category '{category}' for '{query}'")
-                else:
-                    logger.info(f"No results found for '{query}'")
-                return
-            
-            logger.info(f"\nSearch results for '{query}':")
-            print_h_bar()
-            
-            for i, result in enumerate(results, 1):
-                memory = result.memory
-                similarity = result.similarity_score
-                
-                logger.info(f"\n{i}. Match strength: {similarity:.2f}")
-                logger.info(f"Category: {memory.category}")
-                logger.info(f"From: {memory.metadata.get('original_filename', 'Unknown source')}")
-                logger.info(f"Content: {memory.content[:200]}...")  # Show first 200 chars
-                
-            print_h_bar()
-                
-        except Exception as e:
-            logger.error(f"Error searching memories: {e}")
+            logger.info(f"\n{i}. Similarity: {similarity:.2f}")
+            logger.info(f"Category: {memory.category}")
+            logger.info(f"From: {memory.metadata.get('original_filename', 'Unknown source')}")
+            logger.info(f"Content: {memory.content[:200]}...")
+        
+        print_h_bar()
 
     def memory_wipe(self, input_list: List[str]) -> None:
         """Wipe memories at different levels"""
@@ -789,7 +731,7 @@ class ZerePyCLI:
             logger.info("No agent loaded. Use 'load-agent' first.")
             return
 
-        # Wipe everything
+        # Wipe all memories
         if len(input_list) == 1:
             categories = self.agent.memory.list_categories()
             if not categories:
@@ -799,73 +741,40 @@ class ZerePyCLI:
             logger.info("\n⚠️  WARNING: This will delete ALL memories for this agent!")
             logger.info(f"Categories to be wiped: {', '.join(categories)}")
             
-            confirmation = self.session.prompt("\nType 'yes' to confirm: ").strip().lower()
-            if confirmation != 'yes':
+            if self.session.prompt("\nType 'yes' to confirm: ").strip().lower() != 'yes':
                 logger.info("Operation cancelled.")
                 return
                 
-            import shutil
-            try:
-                # Get the agent-specific memory path from store's db_path
-                memory_path = self.agent.memory.store.db_path
-                logger.info(f"Wiping memories at: {memory_path}")
-                shutil.rmtree(memory_path)
-                self.agent.memory.store.collections.clear()
+            if self.agent.memory.wipe_all_memories():
                 logger.info("✅ All memories wiped successfully.")
-            except Exception as e:
-                logger.error(f"Error wiping memories: {e}")
             return
 
-        # Wipe category
+        # Wipe one specific category
         category = input_list[1]
         if len(input_list) == 2:
-            try:
-                count = self.agent.memory.count(category)
-                if count == 0:
-                    logger.info(f"No memories found in category '{category}'")
-                    return
-                    
-                logger.info(f"\n⚠️  WARNING: This will delete all memories in category '{category}'")
-                logger.info(f"Documents to be wiped: {count} chunks")
-                
-                confirmation = self.session.prompt("\nType 'yes' to confirm: ").strip().lower()
-                if confirmation != 'yes':
-                    logger.info("Operation cancelled.")
-                    return
-                    
-                self.agent.memory.delete_category(category)
-                logger.info(f"✅ Category '{category}' wiped successfully.")
-            except Exception as e:
-                logger.error(f"Error wiping category: {e}")
-            return
-
-        # Wipe specific document
-        filename = input_list[2]
-        try:
-            memories = self.agent.memory.get_recent(category, n_results=1000)
-            chunks_to_delete = [
-                mem for mem in memories 
-                if mem.metadata.get('original_filename') == filename
-            ]
-            
-            if not chunks_to_delete:
-                logger.info(f"No document found matching '{filename}' in category '{category}'")
+            if category not in self.agent.memory.list_categories():
+                logger.info(f"Category '{category}' not found.")
                 return
                 
-            logger.info(f"\n⚠️  WARNING: This will delete '{filename}' from category '{category}'")
-            logger.info(f"Chunks to be wiped: {len(chunks_to_delete)}")
+            logger.info(f"\n⚠️  WARNING: This will delete category '{category}'")
             
-            confirmation = self.session.prompt("\nType 'yes' to confirm: ").strip().lower()
-            if confirmation != 'yes':
+            if self.session.prompt("\nType 'yes' to confirm: ").strip().lower() != 'yes':
                 logger.info("Operation cancelled.")
                 return
                 
-            for chunk in chunks_to_delete:
-                self.agent.memory.delete(category, chunk.id)
-            
-            logger.info(f"✅ Document '{filename}' wiped successfully from '{category}'")
-        except Exception as e:
-            logger.error(f"Error wiping document: {e}")
+            result = self.agent.memory.wipe_category(category)
+            if result["success"]:
+                logger.info(f"✅ Category '{category}' wiped successfully")
+            return
+
+        # Wipe one specific document
+        filename = input_list[2]
+        chunks_deleted = self.agent.memory.wipe_document(category, filename)
+        
+        if chunks_deleted == 0:
+            logger.info(f"No document found matching '{filename}' in category '{category}'")
+        else:
+            logger.info(f"✅ Document '{filename}' wiped successfully ({chunks_deleted} chunks deleted)")
 
     def exit(self, input_list: List[str]) -> None:
         """Exit the CLI gracefully"""
