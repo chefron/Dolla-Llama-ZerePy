@@ -4,8 +4,6 @@ from .store import VectorStore
 from .types import Memory, SearchResult
 from pypdf import PdfReader
 from pathlib import Path
-from uuid import uuid4
-from io import BytesIO
 import logging
 import re
 
@@ -82,8 +80,8 @@ class MemoryManager:
             logger.error(f"Error getting recent memories from {category}: {e}")
             return []
         
-    def get_relevant_context(self, query: str, n_results: int = 3) -> tuple[str, list]:
-        """Get relevant memory context for a query. Returns (context_text, search_results)"""
+    def get_relevant_context(self, query: str, n_results: int = 3) -> tuple[str, List[SearchResult]]:
+        """Get relevant memory context for a query"""
         if len(query.split()) <= 3: # Basic complexity check
             return "", []
 
@@ -105,7 +103,7 @@ class MemoryManager:
     def split_document(self, text: str, 
                         chunk_size: int = 500, 
                         chunk_overlap: int = 100,
-                        respect_boundaries: bool = True) -> List[Dict[str, str]]:
+                        respect_boundaries: bool = True) -> List[Dict[str, Optional[str]]]:
         """
         Split a document into overlapping chunks while attempting to respect content boundaries.
         
@@ -191,22 +189,34 @@ class MemoryManager:
                     file_path: str,
                     category: str,
                     metadata: Optional[Dict] = None) -> List[str]:
-        """
-        Create memory chunks from any document type while preserving structure
-        """
         memory_ids = []
+        file_extension = Path(file_path).suffix[1:].lower()
         base_metadata = {
             "source": file_path,
-            "document_type": Path(file_path).suffix[1:],  # Remove dot from extension
+            "document_type": file_extension,
             **(metadata or {})
         }
         
         try:
-            # Read the file
-            with open(file_path, 'r', encoding='utf-8') as file:
-                text = file.read()
+            # PDF handling
+            if file_extension == 'pdf':
+                reader = PdfReader(file_path)
+                text = ""
+                for i, page in enumerate(reader.pages):
+                    page_text = page.extract_text()
+                    if page_text.strip():
+                        text += f"Page {i+1} of {len(reader.pages)}:\n{page_text}\n\n"
+                
+                base_metadata.update({
+                    "total_pages": len(reader.pages),
+                    "has_text": bool(text.strip())
+                })
+            else:
+                # Default to text reading for all other files
+                with open(file_path, 'r', encoding='utf-8') as file:
+                    text = file.read()
             
-            # Split into logical sections
+            # Use existing split_document method
             sections = self.split_document(text)
             
             # Create memories for each section

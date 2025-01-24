@@ -26,7 +26,6 @@ jupiter-python-sdk = "^0.0.2.0"
 chromadb = "^0.6.3"
 pypdf = "^5.1.0"
 
-
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
