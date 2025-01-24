@@ -113,6 +113,7 @@ class ZerePyAgent:
                         )
                         if tweets:
                             prompt_parts.extend(f"- {tweet['text']}" for tweet in tweets)
+            
             self._system_prompt = "\n".join(prompt_parts)
 
         return self._system_prompt
