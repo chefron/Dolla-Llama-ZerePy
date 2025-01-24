@@ -10,7 +10,7 @@ twitter_config.json
 
 # AGENTS
 agents/*.json
-agents/dolla-llama
+agents/dolla_llama
 
 # MEMORY DATABASE
 memory_db
